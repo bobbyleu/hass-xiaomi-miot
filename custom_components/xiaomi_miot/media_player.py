@@ -1,4 +1,5 @@
 """Support for Xiaomi WiFi speakers."""
+import asyncio
 import logging
 import requests
 import hashlib
@@ -372,16 +373,34 @@ class MiotMediaPlayerEntity(MiotEntity, BaseMediaPlayerEntity):
         # 缓存xiaoai_device信息，避免每次更新都请求
         now = datetime.utcnow()
         last_update = self._vars.get('last_xiaoai_device_update')
-        if self.xiaoai_device is None or (last_update and (now - last_update).total_seconds() > 300):
-            await self.async_update_xiaoai_device()
-            self._vars['last_xiaoai_device_update'] = now
+        if self.xiaoai_device is None or (last_update and (now - last_update).total_seconds() > 600):
+            try:
+                await asyncio.wait_for(
+                    self.async_update_xiaoai_device(),
+                    timeout=3.0
+                )
+                self._vars['last_xiaoai_device_update'] = now
+            except (asyncio.TimeoutError, Exception):
+                pass
 
         if self.xiaoai_device:
             if self.state == MediaPlayerState.PLAYING:
-                await self.async_update_play_status()
+                try:
+                    await asyncio.wait_for(
+                        self.async_update_play_status(),
+                        timeout=3.0
+                    )
+                except (asyncio.TimeoutError, Exception):
+                    pass
             elif not self._vars.get('last_play_status_update') or (now - self._vars['last_play_status_update']).total_seconds() > 60:
-                await self.async_update_play_status()
-                self._vars['last_play_status_update'] = now
+                try:
+                    await asyncio.wait_for(
+                        self.async_update_play_status(),
+                        timeout=3.0
+                    )
+                    self._vars['last_play_status_update'] = now
+                except (asyncio.TimeoutError, Exception):
+                    pass
 
             from .sensor import XiaoaiConversationSensor
             add_sensors = self._add_entities.get('sensor')
