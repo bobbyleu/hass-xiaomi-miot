@@ -2,6 +2,7 @@
 import logging
 import time
 import json
+import asyncio
 from typing import cast
 from datetime import datetime, timedelta
 from functools import cmp_to_key, cached_property
@@ -595,17 +596,24 @@ class XiaoaiConversationSensor(MiCoordinatorEntity, BaseSensorSubEntity):
         cks = {
             'deviceId': aid,
         }
-        try:
-            res = await mic.async_request_api(api, data=dat, method='GET', cookies=cks) or {}
-            rdt = res.get('data', {})
-            if not isinstance(rdt, dict):
-                rdt = json.loads(rdt) or {}
-        except (TypeError, ValueError, Exception) as exc:
-            rdt = {}
-            _LOGGER.warning(
-                '%s: Got exception while fetch xiaoai conversation: %s',
-                self.name_model, [aid, exc],
-            )
+        rdt = {}
+        retries = 3
+        for attempt in range(retries):
+            try:
+                res = await mic.async_request_api(api, data=dat, method='GET', cookies=cks) or {}
+                rdt = res.get('data', {})
+                if not isinstance(rdt, dict):
+                    rdt = json.loads(rdt) or {}
+                if rdt:
+                    break
+            except (TypeError, ValueError, Exception) as exc:
+                if attempt < retries - 1:
+                    await asyncio.sleep(1)  # 等待1秒后重试
+                else:
+                    _LOGGER.warning(
+                        '%s: Got exception while fetch xiaoai conversation: %s',
+                        self.name_model, [aid, exc],
+                    )
         mls = rdt.get('records') or []
         msg = mls.pop(0) if mls else {}
         self.conversation = msg
