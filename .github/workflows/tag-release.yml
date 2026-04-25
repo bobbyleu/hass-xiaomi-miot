@@ -1,0 +1,69 @@
+name: Tag Release
+
+on:
+  push:
+    tags:
+      - '*-my-*'
+
+jobs:
+  create-release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get tag info
+        id: get_tag_info
+        run: |
+          TAG_NAME=$(basename "${GITHUB_REF}")
+          echo "TAG_NAME=${TAG_NAME}" >> $GITHUB_ENV
+          echo "FULL_TAG_NAME=${GITHUB_REF#refs/tags/}" >> $GITHUB_ENV
+
+      - name: Generate release info
+        id: generate_release_info
+        run: |
+          TAG_NAME="${{ env.TAG_NAME }}"
+          PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
+          if [ -z "$PREV_TAG" ]; then
+            CHANGELOG=$(git log --oneline --format="- %s" -20)
+            RELEASE_TITLE=$(git log -1 --format="%s")
+          else
+            CHANGELOG=$(git log --oneline "${PREV_TAG}..${TAG_NAME}" --format="- %s")
+            RELEASE_TITLE=$(git log -1 --format="%s")
+          fi
+          if [ -z "$CHANGELOG" ]; then
+            CHANGELOG=$(git log --oneline -10 --format="- %s")
+          fi
+          if [ -z "$RELEASE_TITLE" ]; then
+            RELEASE_TITLE="Release $TAG_NAME"
+          fi
+          echo "CHANGELOG<<EOF" >> $GITHUB_ENV
+          echo "$CHANGELOG" >> $GITHUB_ENV
+          echo "EOF" >> $GITHUB_ENV
+          echo "RELEASE_TITLE=${RELEASE_TITLE}" >> $GITHUB_ENV
+
+      - name: Create Release
+        id: create_release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ env.RELEASE_TITLE }}
+          body: ${{ env.CHANGELOG }}
+          draft: false
+          prerelease: false
+
+      - name: ZIP Component Dir
+        run: |
+          cd ${{ github.workspace }}/custom_components/xiaomi_miot
+          zip -r xiaomi_miot.zip ./
+
+      - name: Upload zip to release
+        uses: svenstaro/upload-release-action@v2
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          file: ${{ github.workspace }}/custom_components/xiaomi_miot/xiaomi_miot.zip
+          asset_name: ${{ env.TAG_NAME }}.zip
+          tag: ${{ env.FULL_TAG_NAME }}
+          overwrite: true
