@@ -866,7 +866,7 @@ class MiotCloud(micloud.MiCloud):
             if response.status_code == 401:
                 self._logout()
                 _LOGGER.warning('Unauthorized while executing request to %s, logged out.', url)
-            rsp = response.text
+            rsp = response.text()
             if not rsp or 'error' in rsp or 'invalid' in rsp:
                 log = _LOGGER.info if 'remote/ubus' in url else _LOGGER.warning
                 log('Error while executing request to %s: %s', url, rsp or response.status_code)

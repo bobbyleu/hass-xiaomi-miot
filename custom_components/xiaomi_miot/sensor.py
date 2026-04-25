@@ -600,7 +600,7 @@ class XiaoaiConversationSensor(MiCoordinatorEntity, BaseSensorSubEntity):
         retries = 3
         for attempt in range(retries):
             try:
-                res = await mic.async_request_api(api, data=dat, method='GET', cookies=cks) or {}
+                res = await mic.async_request_api(api, data=dat, method='GET', cookies=cks, timeout=20) or {}
                 rdt = res.get('data', {})
                 if not isinstance(rdt, dict):
                     rdt = json.loads(rdt) or {}
