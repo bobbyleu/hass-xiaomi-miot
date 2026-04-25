@@ -7,7 +7,7 @@ import time
 import json
 import re
 import voluptuous as vol
-from datetime import timedelta, utcnow
+from datetime import timedelta, datetime
 from functools import partial
 from urllib.parse import urlencode, urlparse, parse_qsl
 
@@ -370,14 +370,13 @@ class MiotMediaPlayerEntity(MiotEntity, BaseMediaPlayerEntity):
                 self._attr_state = MediaPlayerState.IDLE
 
         # 缓存xiaoai_device信息，避免每次更新都请求
-        now = utcnow()
+        now = datetime.utcnow()
         last_update = self._vars.get('last_xiaoai_device_update')
         if self.xiaoai_device is None or (last_update and (now - last_update).total_seconds() > 300):
             await self.async_update_xiaoai_device()
             self._vars['last_xiaoai_device_update'] = now
 
         if self.xiaoai_device:
-            # 只有在播放状态下才频繁更新播放状态
             if self.state == MediaPlayerState.PLAYING:
                 await self.async_update_play_status()
             elif not self._vars.get('last_play_status_update') or (now - self._vars['last_play_status_update']).total_seconds() > 60:
