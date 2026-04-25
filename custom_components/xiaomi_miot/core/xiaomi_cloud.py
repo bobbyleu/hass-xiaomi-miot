@@ -875,6 +875,8 @@ class MiotCloud(micloud.MiCloud):
             _LOGGER.warning('Error while executing request to %s: %s', url, exc)
         except requests.exceptions.ConnectTimeout as exc:
             _LOGGER.warning('Connection timeout while executing request to %s: %s', url, exc)
+        except requests.exceptions.SSLError as exc:
+            _LOGGER.warning('SSL error while executing request to %s: %s', url, exc)
         return None
 
     def get_api_by_host(self, host, api=''):
