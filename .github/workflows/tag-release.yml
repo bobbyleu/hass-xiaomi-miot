@@ -64,6 +64,6 @@ jobs:
         with:
           repo_token: ${{ secrets.GITHUB_TOKEN }}
           file: ${{ github.workspace }}/custom_components/xiaomi_miot/xiaomi_miot.zip
-          asset_name: ${{ env.TAG_NAME }}.zip
+          asset_name: xiaomi_miot.zip
           tag: ${{ env.FULL_TAG_NAME }}
           overwrite: true
