@@ -591,7 +591,7 @@ async def _handle_device_registry_event(hass: hass_core.HomeAssistant):
         action = event.data['action']
         registry = dr.async_get(hass)
         device_id = event.data.get('device_id')
-        if device_id not in registry.devices:
+        if not registry.async_get(device_id):
             return
         device = registry.async_get(device_id)
         if not device or not device.identifiers:
@@ -660,6 +660,32 @@ class BaseEntity(BasicEntity):
     _attr_device_class = None
     _attr_entity_category = None
     _attr_translation_key = None
+
+    @property
+    def entity_id(self):
+        # Home Assistant requires an entity's entity_id domain to match the
+        # platform it is registered under. Legacy entities (MiotEntity /
+        # BaseSubEntity) historically generated ids with the integration's own
+        # DOMAIN prefix (e.g. "xiaomi_miot.xxx"), which HA warns about now and
+        # will reject starting in 2027.5.0. Once the entity is attached to its
+        # platform we rewrite the domain prefix to the correct platform domain,
+        # keeping the original object_id. Entities that already use a correct
+        # platform domain are left untouched.
+        eid = getattr(self, '_entity_id', None)
+        if (
+            eid
+            and eid.split('.', 1)[0] == DOMAIN
+            and self.platform is not None
+            and self.platform.domain != DOMAIN
+        ):
+            obj = hass_core.split_entity_id(eid)[1]
+            eid = f'{self.platform.domain}.{obj}'
+            self._entity_id = eid
+        return eid
+
+    @entity_id.setter
+    def entity_id(self, value):
+        self._entity_id = value
 
     async def async_added_to_hass(self):
         await super().async_added_to_hass()

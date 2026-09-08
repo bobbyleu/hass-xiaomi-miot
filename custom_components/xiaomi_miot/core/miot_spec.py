@@ -11,11 +11,13 @@ from homeassistant.core import HomeAssistant
 from homeassistant.const import (
     LIGHT_LUX,
     PERCENTAGE,
+    UnitOfDensity,
     UnitOfElectricCurrent,
     UnitOfElectricPotential,
     UnitOfEnergy,
     UnitOfPower,
     UnitOfPressure,
+    UnitOfRatio,
     UnitOfTemperature,
 )
 from homeassistant.components.sensor import SensorDeviceClass, SensorStateClass
@@ -28,8 +30,6 @@ from homeassistant.exceptions import HomeAssistantError
 from .const import (
     DOMAIN,
     TRANSLATION_LANGUAGES,
-    UnitOfDensity,
-    UnitOfRatio,
 )
 from .utils import get_translation_langs, convert_globs_to_pattern
 
@@ -950,7 +950,7 @@ class MiotProperty(MiotSpecInstance):
             'pascal': UnitOfPressure.PA,
             'μg/m3': UnitOfDensity.MICROGRAMS_PER_CUBIC_METER,
             'mg/m3': UnitOfDensity.MILLIGRAMS_PER_CUBIC_METER,
-            'p/m3': 'p/m³',
+            'p/m3': 'p/m3',
         }
         names = {
             'current_step_count': 'steps',
