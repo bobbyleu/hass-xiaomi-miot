@@ -222,6 +222,40 @@ class Device(CustomConfigHelper):
         if not self._unsub_purge:
             self._unsub_purge = async_track_time_interval(self.hass, self.async_purge_entities, timedelta(hours=12))
 
+    async def async_refresh_local_device(self):
+        """Refresh a local device whose cloud-reported address may have changed."""
+        if not self.cloud or not self.info.did or not self.local or self._proxy_device:
+            return False
+
+        old_host = self.info.host
+        old_token = self.info.token
+        info = await self.entry.get_cloud_device(did=self.info.did, renew=True)
+        if not info:
+            return False
+
+        new_info = DeviceInfo({**self.info.data, **info})
+        if not new_info.host:
+            return False
+        if new_info.host == old_host and new_info.token == old_token:
+            return False
+
+        old_info = self.info
+        self.info = new_info
+        local = MiotDevice.from_device(self)
+        if not local:
+            self.info = old_info
+            return False
+        self.local = local
+        self._local_fails = 0
+        self._local_state = None
+        self.log.warning(
+            '%s: Refreshed local connection after address or token changed: %s -> %s',
+            self.name,
+            old_host,
+            self.info.host,
+        )
+        return True
+
     async def async_unload(self):
         for coo in self.coordinators:
             await coo.async_shutdown()
@@ -687,6 +721,24 @@ class Device(CustomConfigHelper):
         InfoConverter.decode(self, info, None)
         self.dispatch(info, only_info=True, log=False)
 
+    def normalize_miot_results(self, results: list) -> list:
+        """Recode malformed replies declared by a device customization."""
+        keys = self.custom_config_list('miot_result_recode')
+        if not keys or not isinstance(results, list):
+            return results
+        normalized = []
+        for result in results:
+            if (
+                isinstance(result, dict)
+                and f"{result.get('siid')}.{result.get('piid')}" in keys
+                and 'value' not in result
+                and not isinstance(result.get('code'), bool)
+                and isinstance(result.get('code'), (int, float))
+            ):
+                result = {**result, 'value': result['code'], 'code': 0}
+            normalized.append(result)
+        return normalized
+
     def decode(self, data: dict | list) -> dict:
         """Decode data from device."""
         payload = {}
@@ -901,9 +953,30 @@ class Device(CustomConfigHelper):
                 self._local_fails = 0
                 self._local_state = True
                 self.miot_results.updater = 'local'
+                results = self.normalize_miot_results(results)
                 self.miot_results.set_results(results, mapping)
             except (DeviceException, OSError) as exc:
                 self._local_fails += 1
+                if self._local_fails >= 3:
+                    refreshed = False
+                    try:
+                        refreshed = await self.async_refresh_local_device()
+                    except Exception as refresh_exc:  # noqa: BLE001
+                        self.log.warning(
+                            '%s: Failed to refresh local connection: %s',
+                            self.name,
+                            refresh_exc,
+                        )
+                    if refreshed:
+                        return await self.update_miot_status(
+                            mapping=mapping,
+                            use_local=True,
+                            use_cloud=False,
+                            auto_cloud=auto_cloud,
+                            check_lan=check_lan,
+                            max_properties=max_properties,
+                            chunk_services=chunk_services,
+                        )
                 local_state = self._local_fails < 3
                 log = self.log.error
                 if is_offline_exception(exc):
@@ -934,6 +1007,7 @@ class Device(CustomConfigHelper):
                 self.available = True
                 self._cloud_fails = 0
                 self._cloud_state = True
+                results = self.normalize_miot_results(results)
                 self.miot_results.set_results(results, mapping)
             except MiCloudException as exc:
                 self._cloud_fails += 1
@@ -1052,6 +1126,7 @@ class Device(CustomConfigHelper):
             if throw:
                 raise exc
             return {'error': str(exc)}
+        results = self.normalize_miot_results(results)
         self.log.info('Get miot properties: %s', results)
         if results and update_entity:
             self.dispatch(self.decode(results))
