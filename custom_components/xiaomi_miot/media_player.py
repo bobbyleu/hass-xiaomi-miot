@@ -6,6 +6,7 @@ import hmac
 import time
 import json
 import re
+import asyncio
 import voluptuous as vol
 from datetime import timedelta
 from functools import partial
@@ -377,11 +378,35 @@ class MiotMediaPlayerEntity(MiotEntity, BaseMediaPlayerEntity):
             else:
                 self._attr_state = MediaPlayerState.IDLE
 
-        if self.xiaoai_device is None:
-            await self.async_update_xiaoai_device()
+        # 缓存 xiaoai_device 信息（10 分钟），并对小爱设备/播放状态更新加 3s 超时，
+        # 避免网络抖动时实体更新阻塞、触发 HA “Update taking over 10 seconds” 警告
+        now = utcnow()
+        last_device_update = self._vars.get('last_xiaoai_device_update')
+        if self.xiaoai_device is None or (
+            last_device_update
+            and (now - last_device_update).total_seconds() > 600
+        ):
+            try:
+                await asyncio.wait_for(self.async_update_xiaoai_device(), timeout=3.0)
+                self._vars['last_xiaoai_device_update'] = now
+            except (asyncio.TimeoutError, Exception):
+                pass
 
         if self.xiaoai_device:
-            await self.async_update_play_status()
+            if self.state == MediaPlayerState.PLAYING:
+                try:
+                    await asyncio.wait_for(self.async_update_play_status(), timeout=3.0)
+                except (asyncio.TimeoutError, Exception):
+                    pass
+            elif (
+                not self._vars.get('last_play_status_update')
+                or (now - self._vars['last_play_status_update']).total_seconds() > 60
+            ):
+                try:
+                    await asyncio.wait_for(self.async_update_play_status(), timeout=3.0)
+                    self._vars['last_play_status_update'] = now
+                except (asyncio.TimeoutError, Exception):
+                    pass
 
             from .sensor import XiaoaiConversationSensor
             add_sensors = self._add_entities.get('sensor')
