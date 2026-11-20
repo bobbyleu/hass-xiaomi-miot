@@ -1,17 +1,22 @@
 name: Release
 
 on:
-  release:
-    types: [published]
+  push:
+    tags:
+      - "v*"
   workflow_dispatch:
     inputs:
       tag:
-        description: "Existing release tag to package and attach (e.g. v1.1.6-my-2026.11.20)"
+        description: "Existing tag to package and publish (e.g. v1.1.6-bobbyleu.1)"
         required: true
         type: string
 
 permissions:
   contents: write
+
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
 
 jobs:
   release-zip:
@@ -23,14 +28,15 @@ jobs:
 
       - name: ZIP Component Dir
         run: |
-          cd ${{ github.workspace }}/custom_components/xiaomi_miot
-          zip -r xiaomi_miot.zip ./
+          cd "${{ github.workspace }}/custom_components/xiaomi_miot"
+          zip -r "${{ github.workspace }}/xiaomi_miot.zip" ./
 
-      - name: Upload zip to release
-        uses: svenstaro/upload-release-action@v2
+      - name: Publish release with zip asset
+        uses: softprops/action-gh-release@v2
         with:
-          repo_token: ${{ secrets.GITHUB_TOKEN }}
-          file: ${{ github.workspace }}/custom_components/xiaomi_miot/xiaomi_miot.zip
-          asset_name: xiaomi_miot.zip
-          tag: ${{ inputs.tag || github.ref }}
-          overwrite: true
+          tag_name: ${{ inputs.tag || github.ref_name }}
+          name: ${{ inputs.tag || github.ref_name }}
+          files: xiaomi_miot.zip
+          fail_on_unmatched_files: true
+          generate_release_notes: true
+          make_latest: true
