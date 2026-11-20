@@ -1,12 +1,49 @@
-[![version](https://img.shields.io/github/manifest-json/v/al-one/hass-xiaomi-miot?filename=custom_components%2Fxiaomi_miot%2Fmanifest.json)](https://github.com/al-one/hass-xiaomi-miot/releases/latest)
-[![releases](https://img.shields.io/github/downloads/al-one/hass-xiaomi-miot/total)](https://github.com/al-one/hass-xiaomi-miot/releases)
-[![stars](https://img.shields.io/github/stars/al-one/hass-xiaomi-miot)](https://github.com/al-one/hass-xiaomi-miot/stargazers)
-[![issues](https://img.shields.io/github/issues/al-one/hass-xiaomi-miot)](https://github.com/al-one/hass-xiaomi-miot/issues)
-[![HACS](https://img.shields.io/badge/HACS-Default-orange.svg)](https://hacs.xyz)
+[![version](https://img.shields.io/github/manifest-json/v/bobbyleu/hass-xiaomi-miot?filename=custom_components%2Fxiaomi_miot%2Fmanifest.json)](https://github.com/bobbyleu/hass-xiaomi-miot/releases/latest)
+[![releases](https://img.shields.io/github/downloads/bobbyleu/hass-xiaomi-miot/total)](https://github.com/bobbyleu/hass-xiaomi-miot/releases)
+[![stars](https://img.shields.io/github/stars/bobbyleu/hass-xiaomi-miot)](https://github.com/bobbyleu/hass-xiaomi-miot/stargazers)
+[![issues](https://img.shields.io/github/issues/bobbyleu/hass-xiaomi-miot)](https://github.com/bobbyleu/hass-xiaomi-miot/issues)
+[![HACS](https://img.shields.io/badge/HACS-Custom-orange.svg)](https://hacs.xyz)
 
 # Xiaomi Miot For HomeAssistant
 
-English | [简体中文](https://github.com/al-one/hass-xiaomi-miot/blob/master/README_zh.md)
+English | [简体中文](https://github.com/bobbyleu/hass-xiaomi-miot/blob/master/README_zh.md)
+
+## About this fork
+
+This repository is a fork maintained by [bobbyleu](https://github.com/bobbyleu),
+based on the original Xiaomi Miot integration by [al-one](https://github.com/al-one/hass-xiaomi-miot).
+
+| Role | Maintainer |
+| --- | --- |
+| Original author (upstream) | [al-one](https://github.com/al-one/hass-xiaomi-miot) |
+| Fork maintainer | [bobbyleu](https://github.com/bobbyleu/hass-xiaomi-miot) |
+
+This fork tracks upstream **v1.1.6** (commit `8ac4df70`) and adds:
+
+- Fix the Xiaoai conversation sensor raising `TypeError: the JSON object must be str, bytes or bytearray, not NoneType` when the cloud API returns `data: null` (this also spammed a warning every polling cycle).
+- Harden Xiaomi speaker playback parsing when `data` / `info` is `null`.
+- Cache Xiaoai device info for 10 minutes and time out device / playback updates after 3 s, avoiding `Update taking over 10 seconds` in Home Assistant.
+- Catch `ConnectTimeout` / `SSLError` in cloud requests instead of failing the whole update.
+- Point `documentation` / `issue_tracker` at this fork and credit both authors in `codeowners`.
+
+**Versioning.** Fork releases follow the `<upstream>-bobbyleu.<N>` scheme, where `<upstream>` is the
+upstream release this build is based on and `<N>` is the fork's own revision. For example
+`1.1.6-bobbyleu.1` is the first fork revision on top of upstream `1.1.6`, `1.1.6-bobbyleu.2` would be
+the second, and once upstream ships `1.1.7` the fork restarts at `1.1.7-bobbyleu.1`.
+Fork releases are published at [bobbyleu/hass-xiaomi-miot/releases](https://github.com/bobbyleu/hass-xiaomi-miot/releases);
+upstream releases remain at [al-one/hass-xiaomi-miot/releases](https://github.com/al-one/hass-xiaomi-miot/releases).
+
+> **Note for HACS.** In SemVer terms `<upstream>-bobbyleu.<N>` is a pre-release, so it sorts *below*
+> the plain upstream version. Switching from upstream `1.1.6` (or from an older `-my-` build) to
+> `1.1.6-bobbyleu.1` is therefore a one-time manual **Redownload**; later revisions such as
+> `1.1.6-bobbyleu.2` are offered as normal updates.
+
+> **Switching from the upstream repository.** Home Assistant's Marketplace binds the
+> `custom_components/xiaomi_miot` folder to `al-one/hass-xiaomi-miot` and refuses to install
+> a second repository for the same domain
+> (`The xiaomi_miot directory belongs to al-one/hass-xiaomi-miot`).
+> Uninstall the upstream entry first, then install this fork. See
+> [Installation](#installing) for the exact steps.
 
 [MIoT-Spec](https://iot.mi.com/new/doc/design/spec/overall): The protocol specification for Xiaomi IoT devices, is a standard designed by the Xiaomi IoT platform to describe the function definition of hardware products according to the networking mode of hardware products, the characteristics of product functions, the characteristics of user usage scenarios and the user's requirements for hardware product use experience specification.
 

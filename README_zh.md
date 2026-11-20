@@ -1,18 +1,53 @@
-[![version](https://img.shields.io/github/manifest-json/v/al-one/hass-xiaomi-miot?filename=custom_components%2Fxiaomi_miot%2Fmanifest.json)](https://github.com/al-one/hass-xiaomi-miot/releases/latest)
-[![releases](https://img.shields.io/github/downloads/al-one/hass-xiaomi-miot/total)](https://github.com/al-one/hass-xiaomi-miot/releases)
-[![stars](https://img.shields.io/github/stars/al-one/hass-xiaomi-miot)](https://github.com/al-one/hass-xiaomi-miot/stargazers)
-[![issues](https://img.shields.io/github/issues/al-one/hass-xiaomi-miot)](https://github.com/al-one/hass-xiaomi-miot/issues)
-[![HACS](https://img.shields.io/badge/HACS-Default-orange.svg)](https://hacs.xyz)
+[![version](https://img.shields.io/github/manifest-json/v/bobbyleu/hass-xiaomi-miot?filename=custom_components%2Fxiaomi_miot%2Fmanifest.json)](https://github.com/bobbyleu/hass-xiaomi-miot/releases/latest)
+[![releases](https://img.shields.io/github/downloads/bobbyleu/hass-xiaomi-miot/total)](https://github.com/bobbyleu/hass-xiaomi-miot/releases)
+[![stars](https://img.shields.io/github/stars/bobbyleu/hass-xiaomi-miot)](https://github.com/bobbyleu/hass-xiaomi-miot/stargazers)
+[![issues](https://img.shields.io/github/issues/bobbyleu/hass-xiaomi-miot)](https://github.com/bobbyleu/hass-xiaomi-miot/issues)
+[![HACS](https://img.shields.io/badge/HACS-Custom-orange.svg)](https://hacs.xyz)
 
 # Xiaomi Miot For HomeAssistant
 
-[English](https://github.com/al-one/hass-xiaomi-miot/blob/master/README.md) | 简体中文
+[English](https://github.com/bobbyleu/hass-xiaomi-miot/blob/master/README.md) | 简体中文
 
 [MIoT-Spec](https://iot.mi.com/new/doc/design/spec/overall) 是小米IoT平台根据硬件产品的联网方式、产品功能的特点、用户使用场景的特征和用户对硬件产品使用体验的要求，设计的描述硬件产品功能定义的标准规范。
 
 本插件利用了**miot**协议的规范，可将小米设备自动接入[HomeAssistant](https://www.home-assistant.io)，目前已支持大部分小米米家智能设备。且该插件支持HA后台界面集成，无需配置yaml即可轻松将小米设备接入HA。
 
 ![hass-xiaomi-miot-configs](https://user-images.githubusercontent.com/4549099/142151697-5188ea2d-0aad-4778-8b60-b949bcc410bb.png)
+
+
+## 关于本分支
+
+本仓库由 [bobbyleu](https://github.com/bobbyleu) 维护，基于 [al-one](https://github.com/al-one/hass-xiaomi-miot) 原版 Xiaomi Miot 集成。
+
+| 角色 | 维护者 |
+| --- | --- |
+| 原作者（上游） | [al-one](https://github.com/al-one/hass-xiaomi-miot) |
+| 分支维护者 | [bobbyleu](https://github.com/bobbyleu/hass-xiaomi-miot) |
+
+本分支跟进上游 **v1.1.6**（commit `8ac4df70`），并包含以下改动：
+
+- 修复小爱音箱会话传感器在云端返回 `data: null` 时抛出
+  `TypeError: the JSON object must be str, bytes or bytearray, not NoneType` 的问题（此前每轮轮询都会刷一条警告）。
+- 加固小爱音箱播放状态解析，`data` / `info` 为 `null` 时不再抛异常。
+- 小爱设备信息缓存 10 分钟，设备/播放状态更新增加 3 秒超时，避免 Home Assistant 报
+  `Update taking over 10 seconds`。
+- 云端请求捕获 `ConnectTimeout` / `SSLError`，不再让整轮更新失败。
+- `documentation` / `issue_tracker` 指向本分支，`codeowners` 同时署名原作者与分支维护者。
+
+**版本号规则。** 本分支版本遵循 `<上游版本>-bobbyleu.<N>`：`<上游版本>` 是本分支所基于的上游发行版，
+`<N>` 是本分支自己的修订号。例如 `1.1.6-bobbyleu.1` 是基于上游 `1.1.6` 的第 1 次分支修订，
+再发一次就是 `1.1.6-bobbyleu.2`；上游发布 `1.1.7` 后，本分支从 `1.1.7-bobbyleu.1` 重新计数。
+本分支的发行版在 [bobbyleu/hass-xiaomi-miot/releases](https://github.com/bobbyleu/hass-xiaomi-miot/releases)，
+上游发行版仍在 [al-one/hass-xiaomi-miot/releases](https://github.com/al-one/hass-xiaomi-miot/releases)。
+
+> **HACS 提示。** 按 SemVer 规则，`<上游版本>-bobbyleu.<N>` 属于预发布版本，排序低于纯上游版本。
+> 因此从上游 `1.1.6`（或旧的 `-my-` 版本）切换到 `1.1.6-bobbyleu.1` 需要**手动 Redownload 一次**；
+> 之后的 `1.1.6-bobbyleu.2`、`.3` 会按正常升级提示。
+
+> **从上游仓库切换。** Home Assistant 的集成市场会把 `custom_components/xiaomi_miot` 目录绑定到
+> `al-one/hass-xiaomi-miot`，拒绝再安装同域名的第二个仓库
+> （`The xiaomi_miot directory belongs to al-one/hass-xiaomi-miot`）。
+> 请先卸载上游条目，再安装本分支，具体步骤见 [安装/更新](#安装更新) 一节。
 
 
 <a name="faq"></a>
