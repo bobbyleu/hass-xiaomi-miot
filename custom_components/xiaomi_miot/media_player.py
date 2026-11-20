@@ -448,9 +448,11 @@ class MiotMediaPlayerEntity(MiotEntity, BaseMediaPlayerEntity):
         }
         try:
             result = await self.xiaoai_cloud.async_request_api(api, data=dat, method='POST') or {}
-            info = result.get('data', {}).get('info', {})
-            if not isinstance(info, dict):
-                info = json.loads(info)
+            info = (result.get('data') or {}).get('info') or {}
+            if isinstance(info, (str, bytes, bytearray)):
+                info = json.loads(info) if info else {}
+            elif not isinstance(info, dict):
+                info = {}
             if info:
                 song = playing = info.get('play_song_detail') or {}
                 mid = song.get('audio_id') or song.get('global_id')

@@ -784,10 +784,15 @@ class XiaoaiConversationSensor(MiCoordinatorEntity, BaseSensorSubEntity):
         }
         try:
             res = await mic.async_request_api(api, data=dat, method='GET', cookies=cks) or {}
-            rdt = res.get('data', {})
+            rdt = res.get('data') if isinstance(res, dict) else None
+            if isinstance(rdt, (str, bytes, bytearray)):
+                try:
+                    rdt = json.loads(rdt) if rdt else None
+                except (TypeError, ValueError):
+                    rdt = None
             if not isinstance(rdt, dict):
-                rdt = json.loads(rdt) or {}
-        except (TypeError, ValueError, Exception) as exc:
+                rdt = {}  # data:null / no conversation is normal, do not warn
+        except Exception as exc:
             rdt = {}
             _LOGGER.warning(
                 '%s: Got exception while fetch xiaoai conversation: %s',
