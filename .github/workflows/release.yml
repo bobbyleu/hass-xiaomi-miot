@@ -3,6 +3,12 @@ name: Release
 on:
   release:
     types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing release tag to package and attach (e.g. v1.1.6-my-2026.11.20)"
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -12,6 +18,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
 
       - name: ZIP Component Dir
         run: |
@@ -24,5 +32,5 @@ jobs:
           repo_token: ${{ secrets.GITHUB_TOKEN }}
           file: ${{ github.workspace }}/custom_components/xiaomi_miot/xiaomi_miot.zip
           asset_name: xiaomi_miot.zip
-          tag: ${{ github.ref }}
+          tag: ${{ inputs.tag || github.ref }}
           overwrite: true
