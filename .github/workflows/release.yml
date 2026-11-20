@@ -40,3 +40,9 @@ jobs:
           fail_on_unmatched_files: true
           generate_release_notes: true
           make_latest: true
+          body: |
+            Fork build of [al-one/hass-xiaomi-miot](https://github.com/al-one/hass-xiaomi-miot),
+            maintained by [bobbyleu](https://github.com/bobbyleu/hass-xiaomi-miot).
+
+            Changes and the `<upstream>-bobbyleu.<N>` versioning scheme are documented in
+            [README → About this fork](https://github.com/bobbyleu/hass-xiaomi-miot#about-this-fork).
