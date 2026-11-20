@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Optional, Callable
 from datetime import timedelta
 from functools import cached_property
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import TemplateError
 from homeassistant.const import CONF_HOST, CONF_TOKEN, CONF_MODEL, CONF_USERNAME, EntityCategory
 from homeassistant.util import dt
 from homeassistant.components import persistent_notification
@@ -38,6 +39,11 @@ from .utils import (
     get_value,
     DeviceException,
     is_offline_exception,
+    normalize_power_cost_value,
+    power_cost_decreased,
+    parse_power_cost_records,
+    power_cost_record_dates,
+    power_cost_period,
     update_attrs_with_suffix,
 )
 from .templates import template
@@ -173,6 +179,7 @@ class Device(CustomConfigHelper):
     _local_state = None
     _cloud_fails = 0
     _cloud_state = None
+    _lan_check_fails = 0
     _proxy_device = None
     _miot_mapping = None
     _exclude_miot_services = None
@@ -197,6 +204,10 @@ class Device(CustomConfigHelper):
     async def async_init(self):
         if not self.cloud_only:
             self.local = MiotDevice.from_device(self)
+        # must be set before get_spec(), which builds the converters
+        self._exclude_miot_services = self.custom_config_list('exclude_miot_services', [])
+        self._exclude_miot_properties = self.custom_config_list('exclude_miot_properties', [])
+        self._unreadable_properties = self.custom_config_bool('unreadable_properties')
         spec = await self.get_spec()
         if spec and self.local and not self.cloud_only:
             self.miio2miot = Miio2MiotHelper.from_model(self.hass, self.model, spec)
@@ -211,10 +222,6 @@ class Device(CustomConfigHelper):
                 self.local = parent.local
                 self._proxy_device = parent if self.local else None
                 self.log.info('Proxy local device: %s', self.local)
-
-        self._exclude_miot_services = self.custom_config_list('exclude_miot_services', [])
-        self._exclude_miot_properties = self.custom_config_list('exclude_miot_properties', [])
-        self._unreadable_properties = self.custom_config_bool('unreadable_properties')
 
         if not self.coordinators:
             await self.init_coordinators()
@@ -256,12 +263,18 @@ class Device(CustomConfigHelper):
         )
         return True
 
-    async def async_unload(self):
+    async def async_unload(self, *, unload_spec=True):
         for coo in self.coordinators:
             await coo.async_shutdown()
 
-        self.spec = None
-        self.hass.data[DOMAIN].setdefault('miot_specs', {}).pop(self.model, None)
+        self.coordinators.clear()
+        self.main_coordinators.clear()
+
+        # A registry disable retains entities and their converters/spec references.
+        # Only final unload should invalidate their shared specification cache.
+        if unload_spec:
+            self.spec = None
+            self.hass.data[DOMAIN].setdefault('miot_specs', {}).pop(self.model, None)
 
         if self._unsub_purge:
             self._unsub_purge()
@@ -331,9 +344,21 @@ class Device(CustomConfigHelper):
         return {(DOMAIN, self.unique_id)}
 
     @property
+    def connections(self):
+        connections = set()
+
+        if mac := self.info.mac:
+            connections.add(
+                (dr.CONNECTION_NETWORK_MAC, mac)
+            )
+
+        return connections
+
+    @property
     def hass_device_info(self):
         device_info = {
             'identifiers': self.identifiers,
+            'connections': self.connections,
             'name': self.name,
             'model': self.model,
             'manufacturer': (self.model or 'Xiaomi').split('.', 1)[0],
@@ -798,7 +823,7 @@ class Device(CustomConfigHelper):
                 params = data.get('params', [])
                 result = await self.async_set_properties(params)
                 success = True if result else False
-                if err := MiotResults(result).has_error:
+                if err := self.set_property_error(params, result):
                     success = False
                     self.log.warning('Device write error: %s', [payload, data, err])
 
@@ -818,6 +843,32 @@ class Device(CustomConfigHelper):
         if success:
             self.dispatch(payload)
         return result
+
+    def set_property_error(self, params: list, results: list):
+        for item in MiotResults(results).results:
+            if item.is_success:
+                continue
+            if any(self.is_miot_set_property_ack(req, item.result) for req in params):
+                continue
+            return item
+        return None
+
+    @staticmethod
+    def is_miot_set_property_ack(req: dict, res: dict) -> bool:
+        if 'code' in res:
+            return False
+        if res.get('error') is not None:
+            return False
+        if 'siid' not in res or req.get('siid') != res.get('siid'):
+            return False
+        if 'piid' not in res or req.get('piid') != res.get('piid'):
+            return False
+        if 'did' in res and req.get('did') != res.get('did'):
+            return False
+        # Some devices omit `value` from write acknowledgements; siid/piid already identify the write.
+        if 'value' in res and req.get('value') != res.get('value'):
+            return False
+        return True
 
     @property
     def use_local(self):
@@ -853,7 +904,7 @@ class Device(CustomConfigHelper):
 
     @property
     def auto_cloud(self):
-        if not self.cloud:
+        if self.local_only or not self.cloud:
             return False
         return self.custom_config_bool('auto_cloud')
 
@@ -904,6 +955,13 @@ class Device(CustomConfigHelper):
             use_cloud = False if use_local else self.use_cloud
         if auto_cloud is None:
             auto_cloud = self.auto_cloud
+        if self.local_only:
+            use_local = self.use_local
+            use_cloud = False
+            auto_cloud = False
+        elif self.cloud_only:
+            use_local = False
+            use_cloud = self.cloud
         if check_lan is None:
             check_lan = self.custom_config_bool('check_lan')
 
@@ -951,13 +1009,14 @@ class Device(CustomConfigHelper):
                         results.extend(res)
                 self.available = True
                 self._local_fails = 0
+                self._lan_check_fails = 0
                 self._local_state = True
                 self.miot_results.updater = 'local'
                 results = self.normalize_miot_results(results)
                 self.miot_results.set_results(results, mapping)
             except (DeviceException, OSError) as exc:
                 self._local_fails += 1
-                if self._local_fails >= 3:
+                if self._local_fails >= 3 and not self.local_only:
                     refreshed = False
                     try:
                         refreshed = await self.async_refresh_local_device()
@@ -1003,20 +1062,34 @@ class Device(CustomConfigHelper):
                 if results is None:
                     raise MiCloudException('Cloud API returned None response, possible timeout or empty data')
                 if check_lan and self.local:
-                    await self.local.async_info()
-                self.available = True
+                    try:
+                        await self.local.async_info()
+                        self._lan_check_fails = 0
+                    except (DeviceException, OSError) as exc:
+                        self._lan_check_fails += 1
+                        fails = self._lan_check_fails
+                        log = self.log.info if fails < 3 else self.log.warning if fails == 3 else self.log.debug
+                        log('%s: LAN check failed %s times: %s', self.name, fails, exc)
+                else:
+                    self._lan_check_fails = 0
+                self.available = self._lan_check_fails < 3
+                if self._cloud_state is False and self.available:
+                    self.log.info('Cloud request succeeded again after %s failures, marking available', self._cloud_fails)
                 self._cloud_fails = 0
                 self._cloud_state = True
                 results = self.normalize_miot_results(results)
                 self.miot_results.set_results(results, mapping)
             except MiCloudException as exc:
+                was_unavailable = self._cloud_state is False
                 self._cloud_fails += 1
                 self._cloud_state = self._cloud_fails <= 3
                 self.miot_results.errors = exc
 
                 if not self._cloud_state:
                     self.available = False
-                    self.log.error('Cloud request failed %s times, marking unavailable. %s', self._cloud_fails, exc)
+                    # Log the transition to unavailable once, not on every poll while the cloud stays down
+                    log = self.log.debug if was_unavailable else self.log.error
+                    log('Cloud request failed %s times, marking unavailable. %s', self._cloud_fails, exc)
                 else:
                     self.log.info('Cloud request failed (%sth time), will retry. %s', self._cloud_fails, exc)
 
@@ -1036,6 +1109,9 @@ class Device(CustomConfigHelper):
             self.miot_results.to_attributes(self.props)
             self.data['updated'] = dt.now()
             self.dispatch(self.decode(results))
+        elif self.available != getattr(self, '_last_avail_dispatched', True):
+            self.dispatch({}, log=False)
+        self._last_avail_dispatched = self.available
         self.dispatch_info()
         await self.offline_notify()
         return self.miot_results
@@ -1114,11 +1190,24 @@ class Device(CustomConfigHelper):
             return {'error': 'Mapping error'}
         try:
             results = []
-            if self.use_local and self._local_state:
-                results = await self.local.async_get_properties_for_mapping(did=self.did, mapping=mapping)
-            elif self.cloud:
+            if self.use_local and (self.local_only or self._local_state is not False):
+                try:
+                    results = await self.local.async_get_properties_for_mapping(did=self.did, mapping=mapping)
+                    self._local_fails = 0
+                    self._local_state = True
+                except (DeviceException, OSError) as exc:
+                    self._local_fails += 1
+                    self._local_state = self._local_fails < 3
+                    if self.local_only or not self.auto_cloud:
+                        raise
+                    self.log.warning(
+                        '%s: Local read failed, falling back to cloud: %s',
+                        self.name, exc,
+                    )
+                    results = await self.cloud.async_get_properties_for_mapping(self.did, mapping)
+            elif self.cloud and not self.local_only:
                 results = await self.cloud.async_get_properties_for_mapping(self.did, mapping)
-        except (DeviceException, MiCloudException) as exc:
+        except (DeviceException, MiCloudException, OSError) as exc:
             self.log.error(
                 'Got exception while get properties: %s, mapping: %s, miio: %s',
                 exc, mapping, self.info.miio_info,
@@ -1136,8 +1225,8 @@ class Device(CustomConfigHelper):
     async def async_set_properties(self, params):
         results = []
         cloud_params = []
-        cloud_write = self.cloud and self.custom_config_bool('miot_cloud_write')
-        if not self._local_state or self.cloud_only or cloud_write:
+        cloud_write = not self.local_only and self.cloud and self.custom_config_bool('miot_cloud_write')
+        if not self.local_only and (self._local_state is False or self.use_cloud or cloud_write):
             cloud_params = params
         elif self.miio2miot:
             for param in params:
@@ -1149,7 +1238,7 @@ class Device(CustomConfigHelper):
                 results.append(await self.miio2miot.async_set_property(self.local, siid, piid, param['value']))
         elif self.local:
             results = await self.local.async_send('set_properties', params)
-        if self.cloud and cloud_params:
+        if self.cloud and cloud_params and not self.local_only:
             if self.custom_config_bool('cloud_set_single'):
                 results.extend([
                     res[0]
@@ -1195,6 +1284,8 @@ class Device(CustomConfigHelper):
         try:
             results = await self.async_set_properties([pms])
             result = MiotResults(results).first
+            if result and self.is_miot_set_property_ack(pms, result.result):
+                result = MiotResult({**result.result, 'code': 0, 'value': value})
         except (DeviceException, MiCloudException) as exc:
             self.log.warning('Set miot property %s failed: %s', pms, exc)
             return MiotResult({}, code=-1, error=str(exc))
@@ -1215,19 +1306,19 @@ class Device(CustomConfigHelper):
             'in':   params or [],
         }
         cloud = None
-        if kwargs.get('cloud'):
+        if not self.local_only and kwargs.get('cloud'):
             cloud = self.cloud
-        elif self.custom_config_bool('miot_cloud_action'):
+        elif not self.local_only and self.custom_config_bool('miot_cloud_action'):
             cloud = self.cloud
-        elif self.auto_cloud and not self._local_state:
+        elif self.auto_cloud and self._local_state is False:
             cloud = self.cloud
         elif self.use_cloud:
             cloud = self.cloud
         try:
-            if self.miio2miot and self.miio2miot.has_setter(siid, aiid=aiid):
-                result = await self.miio2miot.async_call_action(self.local, siid, aiid, params)
-            elif cloud:
+            if cloud:
                 result = await cloud.async_do_action(pms)
+            elif self.miio2miot and self.miio2miot.has_setter(siid, aiid=aiid):
+                result = await self.miio2miot.async_call_action(self.local, siid, aiid, params)
             else:
                 if not kwargs.get('force_params'):
                     action = kwargs.get('action')
@@ -1252,6 +1343,9 @@ class Device(CustomConfigHelper):
     def cloud_statistics_commands(self):
         commands = self.custom_config_list('micloud_statistics') or []
         if keys := self.custom_config_list('stat_power_cost_key'):
+            tpl = self.custom_config(
+                'stat_power_cost_template', 'micloud_statistics_power_cost',
+            )
             for k in keys:
                 commands.append({
                     'type': self.custom_config('stat_power_cost_type', 'stat_day_v3'),
@@ -1259,7 +1353,7 @@ class Device(CustomConfigHelper):
                     'day': 32,
                     'limit': 31,
                     'attribute': None,
-                    'template': 'micloud_statistics_power_cost',
+                    'template': tpl,
                 })
         return commands
 
@@ -1282,27 +1376,123 @@ class Device(CustomConfigHelper):
                 'time_end': now + 60,
                 'limit': int(c.get('limit') or 1),
             }
-            rdt = await self.cloud.async_request_api('v2/user/statistics', pms) or {}
-            self.log.info('Got micloud statistics: %s', rdt)
-            if tpl := c.get('template'):
-                tpl = template(tpl, self.hass)
-                rls = tpl.async_render(rdt)
+            power_cost = c.get('template') == 'micloud_statistics_power_cost'
+            missing = {'power_cost_today': None, 'power_cost_month': None}
+            try:
+                rdt = await self.cloud.async_request_api('v2/user/statistics', pms)
+            except (MiCloudException, TimeoutError):
+                self.log.debug('Cloud statistics request unavailable: %s', c['key'])
+                rdt = None
+            if power_cost and (
+                not isinstance(rdt, dict)
+                or rdt.get('code', 0) != 0
+                or not isinstance(rdt.get('result'), list)
+            ):
+                log = self.log.debug if rdt is None or rdt == {} else self.log.warning
+                log('Ignore invalid power statistics response: %s', c['key'])
+                rls = missing
+            elif tpl := c.get('template'):
+                if power_cost:
+                    rdt = {**rdt, 'result': parse_power_cost_records(rdt['result'])}
+                try:
+                    rls = template(tpl, self.hass).async_render(rdt or {})
+                    if power_cost and isinstance(rls, dict):
+                        rls = self._validate_power_cost_coverage(c, rdt['result'], rls, dt.now())
+                except TemplateError:
+                    self.log.warning('Ignore invalid statistics template data: %s', c['key'])
+                    if not power_cost:
+                        continue
+                    rls = missing
             else:
                 rls = [
                     v.get('value')
-                    for v in rdt
+                    for v in (rdt or [])
                     if 'value' in v
                 ]
             if anm := c.get('attribute'):
                 attrs[anm] = rls
             elif isinstance(rls, dict):
+                # Reserve suffixes even when an earlier energy command failed.
                 update_attrs_with_suffix(attrs, rls)
+        attrs = self._filter_power_cost_statistics(attrs, dt.now())
         if attrs:
             self.available = True
             self.props.update(attrs)
             self.data['updated'] = dt.now()
             self.dispatch(self.decode_attrs(attrs))
         return attrs
+
+    def _validate_power_cost_coverage(self, command, records, attrs, now):
+        """Reject missing or ambiguous observed days, not sparse zero-use days."""
+        dates, conflicts = power_cost_record_dates(records, now)
+        if now.date() not in dates:
+            self.log.debug(
+                'No valid power statistics for current day: key=%s, period=%s, current_month_days=%s',
+                command['key'], now.strftime('%Y-%m-%d'), len(dates),
+            )
+        period = now.strftime('%Y-%m')
+        key = (command.get('type', 'stat_day_v3'), command['key'],
+               command.get('day') or 7, command.get('limit') or 1)
+        coverage = self.data.setdefault('_power_cost_coverage', {})
+        previous = coverage.get(key, {})
+        seen = previous.get('dates', set()) if previous.get('period') == period else set()
+        missing = seen - dates
+        reason = 'conflicting_records' if conflicts else 'missing_records' if missing else None
+        coverage[key] = {'period': period, 'dates': seen | dates, 'reason': reason}
+        if reason:
+            attrs = dict(attrs)
+            attrs['power_cost_month'] = None
+            if now.date() in conflicts:
+                attrs['power_cost_today'] = None
+            self.log.debug(
+                'Ignore incomplete monthly power statistics: %s, missing=%s, conflicting=%s',
+                reason, len(missing), len(conflicts),
+            )
+        return attrs
+
+    def _filter_power_cost_statistics(self, attrs, now):
+        """Filter invalid and decreasing power cost statistics."""
+        result = dict(attrs)
+        periods = self.data.setdefault('_power_cost_periods', {})
+        rejections = self.data.setdefault('_power_cost_rejections', {})
+        for key in list(result):
+            period = power_cost_period(key, now)
+            if not period:
+                continue
+            value = normalize_power_cost_value(result[key])
+            if value is None:
+                result.pop(key)
+                continue
+            previous = normalize_power_cost_value(self.props.get(key))
+            # Old restore data only retained the native value rounded to 3
+            # decimals. Compare in that precision until a real sample replaces it.
+            restore_scales = self.data.get('_power_cost_restore_scales', {})
+            scale = restore_scales.get(key)
+            comparison = round(value * scale, 3) if scale else value
+            baseline = round(previous * scale, 3) if scale and previous is not None else previous
+            if (
+                periods.get(key) == period
+                and previous is not None
+                and power_cost_decreased(comparison, baseline)
+            ):
+                log = self.log.debug if rejections.get(key) == period else self.log.warning
+                log(
+                    'Ignore decreasing power cost in the same period: '
+                    '%s: %s -> %s, period=%s',
+                    key,
+                    previous,
+                    value,
+                    period,
+                )
+                rejections[key] = period
+                result.pop(key)
+                continue
+            if periods.get(key) == period and previous is not None and not scale and value < previous:
+                result[key] = self.props[key]
+            restore_scales.pop(key, None)
+            rejections.pop(key, None)
+            periods[key] = period
+        return result
 
     @cached_property
     def miio_cloud_records(self):

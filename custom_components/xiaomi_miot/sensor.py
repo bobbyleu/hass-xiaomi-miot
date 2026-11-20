@@ -1,4 +1,5 @@
 """Support for Xiaomi sensors."""
+import asyncio
 import logging
 import time
 import json
@@ -13,8 +14,12 @@ from homeassistant.components.sensor import (
     SensorDeviceClass,
     SensorStateClass,
 )
+from homeassistant.core import callback
+from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers.event import async_track_time_change
 from homeassistant.helpers.restore_state import RestoreEntity, RestoredExtraData
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
+from homeassistant.util.unit_conversion import EnergyConverter
 
 from . import (
     DOMAIN,
@@ -33,7 +38,14 @@ from .core.miot_spec import (
     MiotSpec,
     MiotService,
 )
-from .core.utils import local_zone, get_translation
+from .core.utils import (
+    POWER_COST_PATTERN,
+    get_translation,
+    local_zone,
+    normalize_power_cost_value,
+    power_cost_decreased,
+    power_cost_period,
+)
 
 _LOGGER = logging.getLogger(__name__)
 DATA_KEY = f'{ENTITY_DOMAIN}.{DOMAIN}'
@@ -41,30 +53,77 @@ DATA_KEY = f'{ENTITY_DOMAIN}.{DOMAIN}'
 SERVICE_TO_METHOD = {}
 
 
+def _message_entity_id(cloud):
+    # Keep the historical entity ID for the default region to avoid breaking
+    # existing automations and restored state.
+    if cloud.default_server == 'cn':
+        return f'{ENTITY_DOMAIN}.mi_{cloud.user_id}_message'
+    return f'{ENTITY_DOMAIN}.mi_{cloud.user_id}_{cloud.default_server}_message'
+
+
+def _message_unique_id(cloud):
+    return f'{DOMAIN}-mihome-message-{cloud.account_key}'
+
+
+def _migrate_message_entity(hass, cloud):
+    """Move the legacy per-user message entity to the per-region identity."""
+    ent_reg = er.async_get(hass)
+    unique_id = _message_unique_id(cloud)
+    if ent_reg.async_get_entity_id(ENTITY_DOMAIN, DOMAIN, unique_id):
+        return
+
+    old_unique_id = f'{DOMAIN}-mihome-message-{cloud.user_id}'
+    old_entity_id = ent_reg.async_get_entity_id(ENTITY_DOMAIN, DOMAIN, old_unique_id)
+    if not old_entity_id:
+        return
+
+    legacy_entity_id = f'{ENTITY_DOMAIN}.mi_{cloud.user_id}_message'
+    entity_id = _message_entity_id(cloud)
+    if (
+        cloud.default_server != 'cn'
+        and old_entity_id == legacy_entity_id
+        and not ent_reg.async_get(entity_id)
+    ):
+        ent_reg.async_update_entity(
+            old_entity_id,
+            new_unique_id=unique_id,
+            new_entity_id=entity_id,
+        )
+    else:
+        ent_reg.async_update_entity(old_entity_id, new_unique_id=unique_id)
+
+
 async def async_setup_entry(hass, config_entry, async_add_entities):
     entry = HassEntry.init(hass, config_entry).new_adder(ENTITY_DOMAIN, async_add_entities)
     cloud = await entry.get_cloud()
 
     if cloud:
-        hass.data[DOMAIN]['accounts'].setdefault(cloud.user_id, {})
+        # One account can be added once per region; user_id alone is not unique.
+        account = hass.data[DOMAIN]['accounts'].setdefault(cloud.account_key, {})
 
         if not entry.get_config('disable_message'):
-            if not hass.data[DOMAIN]['accounts'][cloud.user_id].get('messenger'):
-                entity = MihomeMessageSensor(hass, cloud)
-                await entity.coordinator.async_config_entry_first_refresh()
-                hass.data[DOMAIN]['accounts'][cloud.user_id]['messenger'] = entity
-                async_add_entities([entity], update_before_add=False)
+            # Two region entries can race while the first sensor refresh awaits.
+            message_lock = account.get('messenger_lock')
+            if message_lock is None:
+                message_lock = account['messenger_lock'] = asyncio.Lock()
+            async with message_lock:
+                if not account.get('messenger'):
+                    _migrate_message_entity(hass, cloud)
+                    entity = MihomeMessageSensor(hass, cloud)
+                    await entity.coordinator.async_config_entry_first_refresh()
+                    account['messenger'] = entity
+                    async_add_entities([entity], update_before_add=False)
 
         if not entry.get_config('disable_scene_history'):
             homes = await cloud.async_get_homerooms()
             for home in homes:
                 home_id = home.get('id')
-                if hass.data[DOMAIN]['accounts'][cloud.user_id].get(f'scene_history_{home_id}'):
+                if account.get(f'scene_history_{home_id}'):
                     continue
 
                 entity = MihomeSceneHistorySensor(hass, cloud, home_id, home.get('uid'))
                 await entity.coordinator.async_config_entry_first_refresh()
-                hass.data[DOMAIN]['accounts'][cloud.user_id][f'scene_history_{home_id}'] = entity
+                account[f'scene_history_{home_id}'] = entity
                 async_add_entities([entity], update_before_add=False)
 
     await async_setup_config_entry(hass, config_entry, async_setup_platform, async_add_entities, ENTITY_DOMAIN)
@@ -128,7 +187,109 @@ class SensorEntity(XEntity, BaseEntity, RestoreEntity):
                 self._attr_native_unit_of_measurement = self._miot_property.unit_of_measurement
 
     def get_state(self) -> dict:
+        if POWER_COST_PATTERN.search(self.attr):
+            # These are native values, not another raw converter update.
+            state = {
+                'native_value': self._attr_native_value,
+                'native_unit_of_measurement': self.native_unit_of_measurement,
+                'power_cost_period': getattr(self, '_power_cost_period', None),
+            }
+            key = self.conv.attr
+            if key not in self.device.data.get('_power_cost_restore_scales', {}):
+                state['raw_value'] = self.device.props.get(key)
+                state['value_ratio'] = self.custom_value_ratio or 1
+            return state
         return {self.attr: self._attr_native_value}
+
+    async def async_added_to_hass(self):
+        await super().async_added_to_hass()
+        if not POWER_COST_PATTERN.search(self.attr):
+            return
+        now = datetime.now(local_zone(self.hass))
+        current_period = power_cost_period(self.attr, now)
+        self._power_cost_period = current_period
+        restored = await self.async_get_last_state()
+        if restored:
+            extra = await self.async_get_last_extra_data()
+            extra = extra.as_dict() if extra else {}
+            restored_value = self._restored_power_cost_value(restored, extra)
+            restored_at = restored.last_changed.astimezone(
+                local_zone(self.hass)
+            )
+            restored_period = extra.get('power_cost_period') or power_cost_period(
+                self.attr,
+                restored_at,
+            )
+            if restored_value is None or restored_period != current_period:
+                self._attr_native_value = None
+            else:
+                self._attr_native_value = restored_value
+                # Device.props stores cloud units; restore its matching baseline
+                # before the first cloud poll so it cannot accept a false reset.
+                key = self.conv.attr
+                ratio = self.custom_value_ratio or 1
+                raw_value = normalize_power_cost_value(extra.get('raw_value'))
+                legacy_precision = (
+                    extra.get('value_ratio') != ratio
+                    or extra.get('native_unit_of_measurement') != self.native_unit_of_measurement
+                    or raw_value is None
+                    or round(raw_value * ratio, 3) != round(restored_value, 3)
+                )
+                seed_legacy = (
+                    legacy_precision
+                    and self.device.data.get('_power_cost_periods', {}).get(key) != current_period
+                )
+                if legacy_precision:
+                    raw_value = restored_value / ratio
+                attrs = self.device._filter_power_cost_statistics(
+                    {key: raw_value}, now,
+                )
+                self.device.props.update(attrs)
+                self._attr_native_value = round(float(self.device.props[key]) * ratio, 3)
+                # Reuse the normal device offline/recovery lifecycle for this value.
+                self._attr_available = self.device.available
+                self._device_marked_unavailable = not self.device.available
+                # Filtering the seed is not a new cloud observation.
+                if seed_legacy and key in attrs:
+                    self.device.data.setdefault('_power_cost_restore_scales', {})[key] = ratio
+        self.async_on_remove(
+            async_track_time_change(
+                self.hass,
+                self._reset_power_cost_period,
+                hour=0,
+                minute=0,
+                second=0,
+            )
+        )
+
+    def _restored_power_cost_value(self, state, extra):
+        """Read native or legacy restore data without applying the cloud ratio."""
+        value = normalize_power_cost_value(
+            extra.get('native_value', extra.get(self.attr, state.state))
+        )
+        unit = extra.get('native_unit_of_measurement')
+        if unit is None:
+            # Legacy converter data is native; the state is in display units.
+            unit = (self.native_unit_of_measurement if self.attr in extra
+                    else state.attributes.get('unit_of_measurement'))
+        if value is not None and unit != self.native_unit_of_measurement:
+            if unit not in EnergyConverter.VALID_UNITS or self.native_unit_of_measurement not in EnergyConverter.VALID_UNITS:
+                return None
+            value = EnergyConverter.convert(value, unit, self.native_unit_of_measurement)
+        return normalize_power_cost_value(value)
+
+    @callback
+    def _reset_power_cost_period(self, now: datetime):
+        """Reset accumulated power at an observed local period boundary."""
+        period = power_cost_period(self.attr, now)
+        if not period or period == self._power_cost_period:
+            return
+        self._power_cost_period = period
+        self._attr_native_value = 0
+        self.device.props[self.conv.attr] = 0
+        self.device.data.get('_power_cost_restore_scales', {}).pop(self.conv.attr, None)
+        self.device.data.setdefault('_power_cost_periods', {})[self.conv.attr] = period
+        self.async_write_ha_state()
 
     def set_state(self, data: dict):
         value = self.conv.value_from_dict(data)
@@ -144,8 +305,33 @@ class SensorEntity(XEntity, BaseEntity, RestoreEntity):
                     value = round(float(value), 3)
             except (TypeError, ValueError):
                 value = None
+            period = power_cost_period(
+                self.attr,
+                datetime.now(local_zone(self.hass)),
+            )
+            if period:
+                value = normalize_power_cost_value(value)
+                if value is None:
+                    return
             if self.device_class == SensorDeviceClass.TIMESTAMP:
                 value = datetime_with_tzinfo(value)
+            previous = getattr(self, '_attr_native_value', None)
+            if (
+                period
+                and getattr(self, '_power_cost_period', None) == period
+                and previous is not None
+                and power_cost_decreased(value, previous)
+            ):
+                self.log.warning(
+                    'Ignore decreasing power cost in the same period: '
+                    '%s: %s -> %s',
+                    self.attr,
+                    previous,
+                    value,
+                )
+                return
+            if period:
+                self._power_cost_period = period
             self._attr_native_value = value
 
     @cached_property
@@ -157,6 +343,7 @@ XEntity.CLS[ENTITY_DOMAIN] = SensorEntity
 
 
 class MiotSensorEntity(MiotEntity, BaseEntity):
+    _entity_domain = ENTITY_DOMAIN
 
     def __init__(self, config, miot_service: MiotService):
         super().__init__(miot_service, config=config, logger=_LOGGER)
@@ -294,8 +481,8 @@ class MihomeMessageSensor(MiCoordinatorEntity, BaseEntity, RestoreEntity):
         self.hass = hass
         self.cloud = cloud
         self.message = {}
-        self.entity_id = f'{ENTITY_DOMAIN}.mi_{cloud.user_id}_message'
-        self._attr_unique_id = f'{DOMAIN}-mihome-message-{cloud.user_id}'
+        self.entity_id = _message_entity_id(cloud)
+        self._attr_unique_id = _message_unique_id(cloud)
         self._attr_name = f'Xiaomi {cloud.user_id} message'
         self._attr_icon = 'mdi:message'
         self._attr_should_poll = False
@@ -332,7 +519,7 @@ class MihomeMessageSensor(MiCoordinatorEntity, BaseEntity, RestoreEntity):
         To be extended by integrations.
         """
         await super().async_will_remove_from_hass()
-        self.hass.data[DOMAIN]['accounts'].get(self.cloud.user_id, {}).pop('messenger', None)
+        self.hass.data[DOMAIN]['accounts'].get(self.cloud.account_key, {}).pop('messenger', None)
 
     @property
     def extra_restore_state_data(self):
@@ -473,7 +660,7 @@ class MihomeSceneHistorySensor(MiCoordinatorEntity, BaseEntity, RestoreEntity):
         To be extended by integrations.
         """
         await super().async_will_remove_from_hass()
-        self.hass.data[DOMAIN]['accounts'].get(self.cloud.user_id, {}).pop(f'scene_history_{self.home_id}', None)
+        self.hass.data[DOMAIN]['accounts'].get(self.cloud.account_key, {}).pop(f'scene_history_{self.home_id}', None)
 
     @property
     def extra_restore_state_data(self):

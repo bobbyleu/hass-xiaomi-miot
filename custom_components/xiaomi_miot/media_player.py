@@ -60,6 +60,7 @@ from .core.miot_spec import (
 _LOGGER = logging.getLogger(__name__)
 DATA_KEY = f'{ENTITY_DOMAIN}.{DOMAIN}'
 SCAN_INTERVAL = timedelta(seconds=30)
+RE_CJK = re.compile(r'[\u4e00-\u9fff]')
 
 SERVICE_TO_METHOD = {
     'intelligent_speaker': {
@@ -333,6 +334,7 @@ class BaseMediaPlayerEntity(MediaPlayerEntity, MiotEntityInterface, BaseEntity):
 
 
 class MiotMediaPlayerEntity(MiotEntity, BaseMediaPlayerEntity):
+    _entity_domain = ENTITY_DOMAIN
     def __init__(self, config: dict, miot_service: MiotService):
         super().__init__(miot_service, config=config, logger=_LOGGER)
         BaseMediaPlayerEntity.__init__(self, miot_service)
@@ -730,7 +732,7 @@ class MitvMediaPlayerEntity(MiotMediaPlayerEntity):
     @property
     def mitv_name(self):
         nam = self.device_info.get('name', '')
-        if not re.match(r'[^x00-xff]', nam):
+        if not nam or not RE_CJK.search(nam):
             nam = None
         nam = self.custom_config('television_name') or nam
         if not nam:
@@ -1030,6 +1032,7 @@ class MitvMediaPlayerEntity(MiotMediaPlayerEntity):
 
 
 class MiirMediaPlayerEntity(MiirToggleEntity, MediaPlayerEntity):
+    _entity_domain = ENTITY_DOMAIN
     def __init__(self, config: dict, miot_service: MiotService):
         super().__init__(miot_service, config=config, logger=_LOGGER)
 

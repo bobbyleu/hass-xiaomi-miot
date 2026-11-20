@@ -11,13 +11,11 @@ from homeassistant.core import HomeAssistant
 from homeassistant.const import (
     LIGHT_LUX,
     PERCENTAGE,
-    UnitOfDensity,
     UnitOfElectricCurrent,
     UnitOfElectricPotential,
     UnitOfEnergy,
     UnitOfPower,
     UnitOfPressure,
-    UnitOfRatio,
     UnitOfTemperature,
 )
 from homeassistant.components.sensor import SensorDeviceClass, SensorStateClass
@@ -30,6 +28,8 @@ from homeassistant.exceptions import HomeAssistantError
 from .const import (
     DOMAIN,
     TRANSLATION_LANGUAGES,
+    UnitOfDensity,
+    UnitOfRatio,
 )
 from .utils import get_translation_langs, convert_globs_to_pattern
 
@@ -94,7 +94,8 @@ class MiotSpecInstance:
 
     @staticmethod
     def format_desc_name(des, nam):
-        return MiotSpecInstance.format_name(nam if not des or re.match(r'[^x00-xff]', des) else des)
+        des = str(des or '').strip()
+        return MiotSpecInstance.format_name(des if des and des.isascii() else nam)
 
     @staticmethod
     def name_by_type(typ):
@@ -327,7 +328,7 @@ class MiotSpec(MiotSpecInstance):
                         'Renew miot spec instances: %s, count: %s, model: %s',
                         fnm, len(sdt) - 1, model,
                     )
-            except (TypeError, ValueError, BaseException) as exc:
+            except Exception as exc:
                 if not cached:
                     raise exc
                 dat = cached
@@ -369,7 +370,7 @@ class MiotSpec(MiotSpecInstance):
                 dat = await MiotSpec.async_download_miot_spec(hass, url, tries=3)
                 dat['_updated_time'] = now
                 await store.async_save(dat)
-            except (TypeError, ValueError, BaseException) as exc:
+            except Exception as exc:
                 if cached:
                     dat = cached
                 else:
@@ -441,7 +442,7 @@ class MiotSpec(MiotSpecInstance):
                 dat = await MiotSpec.async_download_miot_spec(hass, url, tries=3)
                 dat['_updated_time'] = now
                 await store.async_save(dat)
-            except (TypeError, ValueError, BaseException) as exc:
+            except Exception as exc:
                 if cached:
                     dat = cached
                 else:
@@ -473,7 +474,7 @@ class MiotSpec(MiotSpecInstance):
                 except asyncio.TimeoutError as exc:
                     exception = exc
                     _LOGGER.warning('Timeout when trying to request %s', url)
-                except BaseException as exc:
+                except Exception as exc:
                     exception = exc
                     _LOGGER.warning('Got exception %s when trying to request %s', exc, url)
             tries -= 1
@@ -950,7 +951,7 @@ class MiotProperty(MiotSpecInstance):
             'pascal': UnitOfPressure.PA,
             'μg/m3': UnitOfDensity.MICROGRAMS_PER_CUBIC_METER,
             'mg/m3': UnitOfDensity.MILLIGRAMS_PER_CUBIC_METER,
-            'p/m3': 'p/m3',
+            'p/m3': 'p/m³',
         }
         names = {
             'current_step_count': 'steps',
